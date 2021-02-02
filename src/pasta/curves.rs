@@ -12,7 +12,7 @@ use super::{Fp, Fq};
 use crate::arithmetic::{Curve, CurveAffine, FieldExt, Group};
 
 macro_rules! new_curve_impl {
-    ($name:ident, $name_affine:ident, $base:ident, $scalar:ident, $blake2b_personalization:literal,
+    ($name:ident, $name_affine:ident, $iso_affine:ident, $base:ident, $scalar:ident, $blake2b_personalization:literal,
      $curve_id:literal, $a_raw:expr, $b_raw:expr, $curve_type:ident) => {
         /// Represents a point in the projective coordinate space.
         #[derive(Copy, Clone, Debug)]
@@ -46,7 +46,7 @@ macro_rules! new_curve_impl {
             type Scalar = $scalar;
             type Base = $base;
 
-            impl_projective_curve_specific!($name, $base, $curve_type);
+            impl_projective_curve_specific!($name, $name_affine, $iso_affine, $base, $curve_type);
 
             fn zero() -> Self {
                 Self {
@@ -675,7 +675,38 @@ macro_rules! new_curve_impl {
 }
 
 macro_rules! impl_projective_curve_specific {
-    ($name:ident, $base:ident, special_a0_b5) => {
+    ($name:ident, $name_affine:ident, $iso_affine:ident, $base:ident, special_a0_b5) => {
+        fn hasher(domain_prefix: &str) -> Box<dyn Fn(&[u8]) -> Self + 'static> {
+            use super::hashtocurve::SimplifiedSWUWithDegree3Isogeny;
+
+            let swu: SimplifiedSWUWithDegree3Isogeny<$base, $name_affine, $iso_affine> =
+                SimplifiedSWUWithDegree3Isogeny::new(
+                    $name::Z,
+                    $name::ISOGENY_CONSTANTS,
+                    $name::MINUS_B_OVER_A,
+                    $name::B_OVER_ZA,
+                    $name::THETA,
+                );
+
+            let domain_separation_tag: String = format!(
+                "{}-{}_{}_{}_RO_",
+                domain_prefix,
+                $name_affine::CURVE_ID,
+                "XOF:SHAKE128",
+                "SSWU"
+            );
+
+            Box::new(move |message| {
+                let mut us = [Field::zero(); 2];
+                SimplifiedSWUWithDegree3Isogeny::<$base, $name_affine, $iso_affine>::hash_to_field(
+                    message,
+                    domain_separation_tag.as_bytes(),
+                    &mut us,
+                );
+                swu.field_elements_to_curve(&us[0], &us[1])
+            })
+        }
+
         fn one() -> Self {
             // NOTE: This is specific to b = 5
 
@@ -730,7 +761,12 @@ macro_rules! impl_projective_curve_specific {
             $name::conditional_select(&tmp, &$name::zero(), self.is_zero())
         }
     };
-    ($name:ident, $base:ident, general) => {
+    ($name:ident, $name_affine:ident, $iso_affine:ident, $base:ident, general) => {
+        /// Unimplemented: hashing to this curve is not supported
+        fn hasher(_domain_prefix: &str) -> Box<dyn Fn(&[u8]) -> Self + 'static> {
+            unimplemented!()
+        }
+
         /// Unimplemented: there is no standard generator for this curve.
         fn one() -> Self {
             unimplemented!()
@@ -797,6 +833,7 @@ macro_rules! impl_affine_curve_specific {
 new_curve_impl!(
     Ep,
     EpAffine,
+    IsoEpAffine,
     Fp,
     Fq,
     b"halo2_____pallas",
@@ -808,6 +845,7 @@ new_curve_impl!(
 new_curve_impl!(
     Eq,
     EqAffine,
+    IsoEqAffine,
     Fq,
     Fp,
     b"halo2______vesta",
@@ -819,6 +857,7 @@ new_curve_impl!(
 new_curve_impl!(
     IsoEp,
     IsoEpAffine,
+    EpAffine,
     Fp,
     Fq,
     b"halo2_iso_pallas",
@@ -835,6 +874,7 @@ new_curve_impl!(
 new_curve_impl!(
     IsoEq,
     IsoEqAffine,
+    EqAffine,
     Fq,
     Fp,
     b"halo2__iso_vesta",
@@ -849,7 +889,7 @@ new_curve_impl!(
     general
 );
 
-impl IsoEpAffine {
+impl Ep {
     /// Constants used for computing the isogeny from IsoEp to Ep.
     pub const ISOGENY_CONSTANTS: [Fp; 13] = [
         Fp::from_raw([
@@ -967,7 +1007,7 @@ impl IsoEpAffine {
     ]);
 }
 
-impl IsoEqAffine {
+impl Eq {
     /// Constants used for computing the isogeny from IsoEq to Eq.
     pub const ISOGENY_CONSTANTS: [Fq; 13] = [
         Fq::from_raw([
